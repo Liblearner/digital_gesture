@@ -70,6 +70,10 @@ def max_pool_2x2(z):
     return tf.nn.max_pool2d(z, ksize=[1, 2, 2, 1], strides=[1, 2, 2, 1], padding='SAME')
 
 
+def avg_pool_4x4(z):
+    return tf.nn.avg_pool2d(z, ksize=[1, 4, 4, 1], strides=[1, 4, 4, 1], padding='SAME')
+
+
 def random_mini_batches(X, Y, mini_batch_size=100, seed=0):
     """
     Creates a list of random minibatches from (X, Y)
@@ -129,6 +133,7 @@ def cnn_model(X_train, y_train, X_test, y_test, keep_prob, lamda, num_epochs=450
     y = tf.compat.v1.placeholder(tf.float32, [None, 14], name="input_y")
     kp = tf.compat.v1.placeholder_with_default(1.0, shape=(), name="keep_prob")
     lam = tf.compat.v1.placeholder(tf.float32, name="lamda")
+
     # conv1
     W_conv1 = weight_variable([5, 5, 1, 32])
     b_conv1 = bias_variable([32])
@@ -159,6 +164,7 @@ def cnn_model(X_train, y_train, X_test, y_test, keep_prob, lamda, num_epochs=450
     b_fc2 = bias_variable([14])
     z_fc2 = tf.add(tf.matmul(z_fc1_drop, W_fc2), b_fc2, name="outlayer")
     prob = tf.nn.softmax(z_fc2, name="probability")
+
     # cost function
     regularizer = tf.contrib.layers.l2_regularizer(lam)  # l2正则化,防止过拟合
     regularization = regularizer(W_fc1) + regularizer(W_fc2)
@@ -238,6 +244,111 @@ def cnn_model(X_train, y_train, X_test, y_test, keep_prob, lamda, num_epochs=450
             f.write(output_graph_def.SerializeToString())
         learning_curve(train_accs, test_accs, 20)
 
+def lenet_model(X_train, y_train, X_test, y_test, keep_prob, lamda, num_epochs=450, minibatch_size=100):
+    # 定义anPH1A例程中的小网络结构
+    X = tf.compat.v1.placeholder(tf.float32, [None, 112, 112, 1], name="input_x")
+    y = tf.compat.v1.placeholder(tf.float32, [None, 10], name="input_y")
+    kp = tf.compat.v1.placeholder_with_default(1.0, shape=(), name="keep_prob")
+    lam = tf.compat.v1.placeholder(tf.float32, name="lamda")
+
+    #pre_relu，采用平均池化
+    z0 = avg_pool_4x4(X)
+    # conv1
+    W_conv1 = weight_variable([5, 5, 1, 3])
+    b_conv1 = bias_variable([3])
+    z1 = tf.nn.relu(conv2d(z0, W_conv1) + b_conv1)
+    maxpool1 = max_pool_2x2(z1)  # max_pool1完后maxpool1维度为[?,12,12,3]
+
+    # conv2
+    W_conv2 = weight_variable([5, 5, 3, 3])
+    b_conv2 = bias_variable([3])
+    z2 = tf.nn.relu(conv2d(maxpool1, W_conv2) + b_conv2)
+    maxpool2 = max_pool_2x2(z2)  # max_pool2,shape [?,4,4,3]
+
+    # full connection1
+    W_fc1 = weight_variable([4 * 4 * 3, 10])
+    b_fc1 = bias_variable([10])
+    maxpool2_flat = tf.reshape(maxpool2, [-1, 4 * 4 * 3])
+    z_fc1 = tf.nn.relu(tf.matmul(maxpool2_flat, W_fc1) + b_fc1)
+    prob = tf.nn.softmax(z_fc1, name="probability")
+
+    # cost function
+    regularizer = tf.contrib.layers.l2_regularizer(lam)  # l2正则化,防止过拟合
+    regularization = regularizer(W_fc1)
+    cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(labels=y, logits=z_fc1)) + regularization
+    train = tf.compat.v1.train.AdamOptimizer().minimize(cost)
+    # output_type='int32', name="predict"
+    pred = tf.argmax(prob, 1, output_type="int32", name="predict")  # 输出结点名称predict方便后面保存为pb文件
+    correct_prediction = tf.equal(pred, tf.argmax(y, 1, output_type='int32'))
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    tf.set_random_seed(1)  # to keep consistent results
+
+    seed = 0
+    acc = 0.97
+    train_accs = []
+    test_accs = []
+    init = tf.compat.v1.global_variables_initializer()
+
+    with tf.compat.v1.Session() as sess:
+        # sess=tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        sess.run(init)
+        step = 0
+
+        for epoch in range(num_epochs):
+            seed = seed + 1
+            epoch_cost = 0.
+            num_minibatches = int(X_train.shape[0] / minibatch_size)
+            minibatches = random_mini_batches(X_train, y_train, minibatch_size, seed)
+            minibatchesTest = random_mini_batches(X_test, y_test, minibatch_size, seed)
+            test_i = 0
+            for minibatch in minibatches:
+
+                (minibatch_X, minibatch_Y) = minibatch
+
+                _, minibatch_cost = sess.run([train, cost],
+                                             feed_dict={X: minibatch_X, y: minibatch_Y, kp: keep_prob, lam: lamda})
+                epoch_cost += minibatch_cost / num_minibatches
+                step = step + 1
+                if (step % 20 == 0):
+                    (minibatchtest_X, minibatchtest_Y) = minibatchesTest[test_i]
+                    test_i = test_i + 1
+                    test_acc = accuracy.eval(feed_dict={X: minibatchtest_X, y: minibatchtest_Y, lam: lamda})
+                    train_acc = accuracy.eval(feed_dict={X: minibatch_X, y: minibatch_Y, lam: lamda})
+                    train_accs.append(train_acc)
+                    test_accs.append(test_acc)
+                    print("test accuracy", test_acc)
+                    print("cost", minibatch_cost)
+                    if test_acc > acc:
+                        acc = test_acc
+                        # saver = tf.train.Saver(
+                        #     {'W_conv1': W_conv1, 'b_conv1': b_conv1, 'W_conv2': W_conv2, 'b_conv2': b_conv2,
+                        #      'W_fc1': W_fc1, 'b_fc1': b_fc1, 'W_fc2': W_fc2, 'b_fc2': b_fc2})
+                        saver = tf.compat.v1.train.Saver(
+                            {'W_conv1': W_conv1, 'b_conv1': b_conv1, 'W_conv2': W_conv2, 'b_conv2': b_conv2,
+                             'W_fc1': W_fc1, 'b_fc1': b_fc1})
+                        checkpoint_path = os.path.join(train_dir, 'thing.ckpt')
+                        saver.save(sess, checkpoint_path, global_step=step)
+            print("Cost after epoch %i: %f" % (epoch, epoch_cost))
+            print(str((time.strftime('%Y-%m-%d %H:%M:%S'))))
+
+        # 这个accuracy是前面的accuracy，tensor.eval()和Session.run区别很小
+        train_acc = accuracy.eval(feed_dict={X: X_train[:1000], y: y_train[:1000], kp: 0.8, lam: lamda})
+        print("train accuracy", train_acc)
+        test_acc = accuracy.eval(feed_dict={X: X_test[:1000], y: y_test[:1000], lam: lamda})
+        print("test accuracy", test_acc)
+
+        # save model
+        saver = tf.compat.v1.train.Saver({'W_conv1': W_conv1, 'b_conv1': b_conv1, 'W_conv2': W_conv2, 'b_conv2': b_conv2,
+                                'W_fc1': W_fc1, 'b_fc1': b_fc1})
+        saver.save(sess, "model//lenet_model.ckpt")
+
+        # 将训练好的模型保存为.pb文件，方便在Android studio中使用
+        output_graph_def = tf.compat.v1.graph_util.convert_variables_to_constants(sess,
+                                                                                  sess.graph_def,
+                                                                     output_node_names=['predict'])
+        with tf.gfile.FastGFile('model//mnist.pb', mode='wb') as f:  # ’wb’中w代表写文件，b代表将数据以二进制方式写入文件。
+            f.write(output_graph_def.SerializeToString())
+        learning_curve(train_accs, test_accs, 20)
 
 
 
